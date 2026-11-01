@@ -1,0 +1,132 @@
+// Name: Gor
+// Task: 1 - Lab server and authentication (mongod_lab.conf, 01_auth.mongodb)
+// Date: 2026-11-01
+// Server: mongod 9.0.2, mongosh 2.13.0, port 27019. Passwords are shown as <password>
+// (real throwaway lab passwords were used while running; replace <password> to re-run).
+use('clinic');
+
+// ---------------------------------------------------------------- Step 1
+// mongod_lab.conf: port 27019, absolute dbPath + log path in ./lab-data, bindIp 127.0.0.1,
+// security.authorization: disabled.
+// Shell: mongod --config mongod_lab.conf
+// NOTE: first attempt failed with the exact error:
+//   BadValue: Server fork+exec via `--fork` or `processManagement.fork` is incompatible with macOS
+// so fork was removed from the config and mongod was started in the background with nohup.
+// Connection "lab-open" = mongodb://localhost:27019
+
+// ---------------------------------------------------------------- Step 2 (lab-open, no credentials)
+db.adminCommand({ listDatabases: 1 });
+// {
+//   databases: [
+//     { name: 'admin',  sizeOnDisk: Long('8192'),  empty: false },
+//     { name: 'config', sizeOnDisk: Long('12288'), empty: false },
+//     { name: 'local',  sizeOnDisk: Long('8192'),  empty: false }
+//   ],
+//   totalSize: Long('28672'), totalSizeMb: Long('0'), ok: 1
+// }
+
+// ---------------------------------------------------------------- Step 3 (lab-open, localhost exception)
+db.getSiblingDB('admin').createUser({
+  user: 'labadmin',
+  pwd: '<password>',
+  roles: [
+    { role: 'userAdminAnyDatabase', db: 'admin' },
+    { role: 'readWriteAnyDatabase', db: 'admin' }
+  ]
+});
+// { ok: 1 }
+
+// ---------------------------------------------------------------- Step 4
+// Server stopped (kill of my own mongod PID), config changed to security.authorization: enabled, restarted.
+// Repeat step 2 on lab-open:
+db.adminCommand({ listDatabases: 1 });
+// MongoServerError: Command listDatabases requires authentication
+
+// ---------------------------------------------------------------- Step 5
+// lab-admin = mongodb://labadmin:<password>@localhost:27019/?authSource=admin
+db.adminCommand({ connectionStatus: 1 });
+// {
+//   authInfo: {
+//     authenticatedUsers: [ { user: 'labadmin', db: 'admin' } ],
+//     authenticatedUserRoles: [
+//       { role: 'readWriteAnyDatabase', db: 'admin' },
+//       { role: 'userAdminAnyDatabase', db: 'admin' }
+//     ]
+//   },
+//   uuid: UUID('eb8b3d2a-ebaa-4f58-9ac3-497cf839cf3c'),
+//   ok: 1
+// }
+
+// ---------------------------------------------------------------- Step 6 (as lab-admin, in clinic)
+// Re-runnable: drop first (ignore error if missing).
+try { db.dropUser('mechSha256'); } catch (e) {}
+try { db.dropUser('mechSha1'); } catch (e) {}
+db.createUser({ user: 'mechSha256', pwd: '<password>', roles: [{ role: 'read', db: 'clinic' }], mechanisms: ['SCRAM-SHA-256'] });
+// { ok: 1 }   (the server accepted it, no error)
+db.createUser({ user: 'mechSha1', pwd: '<password>', roles: [{ role: 'read', db: 'clinic' }], mechanisms: ['SCRAM-SHA-1'] });
+// { ok: 1 }   (the server accepted it, no error)
+// (The assignment gives no roles for these two; I gave them read on clinic so they can log in and be useful.)
+
+// Each connection: mongodb://<user>:<password>@localhost:27019/clinic?authSource=clinic[&authMechanism=...]
+// then db.adminCommand({ connectionStatus: 1 }).authInfo
+//
+// mechSha1, no authMechanism:
+//   { authenticatedUsers: [ { user: 'mechSha1', db: 'clinic' } ], authenticatedUserRoles: [ { role: 'read', db: 'clinic' } ] }
+// mechSha1, authMechanism=SCRAM-SHA-1:
+//   { authenticatedUsers: [ { user: 'mechSha1', db: 'clinic' } ], authenticatedUserRoles: [ { role: 'read', db: 'clinic' } ] }
+// mechSha1, authMechanism=SCRAM-SHA-256:
+//   MongoServerError: Unable to use SCRAM-SHA-256 based authentication for user without any SCRAM-SHA-256 credentials registered
+// mechSha256, no authMechanism:
+//   { authenticatedUsers: [ { user: 'mechSha256', db: 'clinic' } ], authenticatedUserRoles: [ { role: 'read', db: 'clinic' } ] }
+// mechSha256, authMechanism=SCRAM-SHA-1:
+//   MongoServerError: Unable to use SCRAM-SHA-1 based authentication for user without any SCRAM-SHA-1 credentials registered
+// mechSha256, authMechanism=SCRAM-SHA-256:
+//   { authenticatedUsers: [ { user: 'mechSha256', db: 'clinic' } ], authenticatedUserRoles: [ { role: 'read', db: 'clinic' } ] }
+//
+// MECHANISMS GRID
+// +------------+--------------------+----------------------------------------+----------------------------------------+
+// | user       | no authMechanism   | authMechanism=SCRAM-SHA-1              | authMechanism=SCRAM-SHA-256            |
+// +------------+--------------------+----------------------------------------+----------------------------------------+
+// | mechSha1   | ok                 | ok                                     | failed: "Unable to use SCRAM-SHA-256   |
+// |            |                    |                                        | based authentication for user without  |
+// |            |                    |                                        | any SCRAM-SHA-256 credentials..."      |
+// | mechSha256 | ok                 | failed: "Unable to use SCRAM-SHA-1     | ok                                     |
+// |            |                    | based authentication for user without  |                                        |
+// |            |                    | any SCRAM-SHA-1 credentials..."        |                                        |
+// +------------+--------------------+----------------------------------------+----------------------------------------+
+
+// ---------------------------------------------------------------- Step 7 (as lab-admin)
+db.getSiblingDB('admin').adminCommand({ getParameter: 1, authenticationMechanisms: 1 });
+// MongoServerError: not authorized on admin to execute command { getParameter: 1, authenticationMechanisms: 1, lsid: { id: UUID("eddfde75-1350-4105-b5d4-3faf2af19b40") }, $db: "admin" }
+// Explanation: getParameter needs the "getParameter" action, which lives in cluster-level roles
+// (clusterMonitor / clusterAdmin / root). The admin made in step 3 only has userAdminAnyDatabase +
+// readWriteAnyDatabase, which do not include it. I did not grant extra roles, because the assignment
+// does not ask for it. So I have no real value for this parameter and I do not invent one.
+
+// ---------------------------------------------------------------- Step 8
+// mongodb://mechSha256:<password>@localhost:27019/clinic?authSource=admin
+// MongoServerError: Authentication failed.
+// (mechSha256 was created in clinic, so it does not exist in admin.)
+
+// ---------------------------------------------------------------- Written answers
+// Q1: The first user is created before authorization is enabled because, with auth on and no users,
+// nobody could do anything. The localhost exception also lets a connection from localhost create the
+// first user while the server has no users at all, but that exception closes right after the first user
+// exists (and a working setup should not rely on it). Creating the admin first with userAdminAnyDatabase
+// means that, once auth is enabled, someone can still create the other users and roles.
+//
+// Q2: authSource tells the server which database holds the user's credentials; a user is identified by
+// the pair (name, database), not by name alone. In step 8 I asked the server to look for mechSha256 in
+// admin, but that user lives in clinic, so there was no matching record and the server answered
+// "Authentication failed." The same name with the right authSource (clinic) worked in step 6.
+//
+// Q3: With no authMechanism, both users logged in successfully: mechSha1 got in with SCRAM-SHA-1 and
+// mechSha256 got in with SCRAM-SHA-256. Forcing the wrong mechanism fails with "without any SCRAM-xxx
+// credentials registered", because each user only stores credentials for its own mechanism. This
+// suggests that the client asks the server which mechanisms the user supports (saslSupportedMechs in
+// the hello handshake) and picks one both sides share; an explicit authMechanism skips that negotiation.
+//
+// Q4: With bindIp 0.0.0.0 the server listens on every network interface, and with authorization disabled
+// anyone who can reach the port can connect with no username or password. They can read, change or drop
+// every database, create users, and even run admin commands. Either setting alone is bad; together
+// they expose all data (here patient data) to the whole network or the internet.

@@ -1,0 +1,122 @@
+// Name: Gor
+// Task: 5 - Relations with $lookup (06_lookup.mongodb)
+// Date: 2026-11-01
+// Connection: lab-admin = mongodb://labadmin:<password>@localhost:27019/?authSource=admin
+// Run 04_seed.mongodb first: the checks below are for freshly seeded data (9 users, 9 appointments).
+use('clinic');
+function show(label, value) { console.log(label + ' -> ' + JSON.stringify(value)); }
+
+// ---------------------------------------------------------------- L1
+// Every appointment with the doctor's name and the patient's name, earliest first.
+// Two lookups into the same collection (users), so two different "as" names: doc and pat.
+// $lookup always returns an array; $unwind turns the one-element array into a plain object.
+const l1 = db.appointments.aggregate([
+  { $sort: { start: 1 } },
+  { $lookup: { from: 'users', localField: 'doctorId',  foreignField: '_id', as: 'doc' } },
+  { $lookup: { from: 'users', localField: 'patientId', foreignField: '_id', as: 'pat' } },
+  { $unwind: '$doc' },
+  { $unwind: '$pat' },
+  { $project: { _id: 0, start: 1, doctor: '$doc.name', patient: '$pat.name', reason: 1, status: 1 } }
+]).toArray();
+show('L1 count', l1.length);
+l1.forEach(d => show('L1', d));
+// Result: <paste>
+
+// ---------------------------------------------------------------- L2
+// Every doctor with how many appointments they have, including doctors with none.
+// Starts from users, so a doctor with no appointments still appears (with an empty array -> size 0).
+show('L2', db.users.aggregate([
+  { $match: { role: 'doctor' } },
+  { $lookup: { from: 'appointments', localField: '_id', foreignField: 'doctorId', as: 'appts' } },
+  { $project: { _id: 0, doctor: '$name', appointments: { $size: '$appts' } } },
+  { $sort: { appointments: -1, doctor: 1 } }
+]).toArray());
+// Result: <paste>
+
+// ---------------------------------------------------------------- L3
+// Every patient with how many appointments they have, including patients with none.
+show('L3', db.users.aggregate([
+  { $match: { role: 'patient' } },
+  { $lookup: { from: 'appointments', localField: '_id', foreignField: 'patientId', as: 'appts' } },
+  { $project: { _id: 0, patient: '$name', appointments: { $size: '$appts' } } },
+  { $sort: { appointments: -1, patient: 1 } }
+]).toArray());
+// Result: <paste>
+
+// ---------------------------------------------------------------- L4
+// Fees collected per doctor from completed appointments only, and how many; highest first.
+show('L4', db.appointments.aggregate([
+  { $match: { status: 'completed' } },
+  { $group: { _id: '$doctorId', appointments: { $sum: 1 }, revenue: { $sum: '$fee' } } },
+  { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'doc' } },
+  { $unwind: '$doc' },
+  { $project: { _id: 0, doctor: '$doc.name', appointments: 1, revenue: 1 } },
+  { $sort: { revenue: -1 } }
+]).toArray());
+// Result: <paste>
+
+// ---------------------------------------------------------------- L5
+// Patients who have never had an appointment.
+show('L5', db.users.aggregate([
+  { $match: { role: 'patient' } },
+  { $lookup: { from: 'appointments', localField: '_id', foreignField: 'patientId', as: 'appts' } },
+  { $match: { appts: { $size: 0 } } },
+  { $project: { _id: 0, name: 1, email: 1 } }
+]).toArray());
+// Result: <paste>
+
+// ---------------------------------------------------------------- L6
+// Per doctor specialty: number of non-cancelled appointments and the average fee (2 decimals), highest average first.
+// The specialty lives in the looked-up doctor document, reached with dot notation: doc.doctor.specialty.
+show('L6', db.appointments.aggregate([
+  { $match: { status: { $ne: 'cancelled' } } },
+  { $lookup: { from: 'users', localField: 'doctorId', foreignField: '_id', as: 'doc' } },
+  { $unwind: '$doc' },
+  { $group: { _id: '$doc.doctor.specialty', appointments: { $sum: 1 }, avg: { $avg: '$fee' } } },
+  { $project: { _id: 0, specialty: '$_id', appointments: 1, avgFee: { $round: ['$avg', 2] } } },
+  { $sort: { avgFee: -1 } }
+]).toArray());
+// Result: <paste>
+
+// ---------------------------------------------------------------- L7 (bonus)
+// Two bad appointments that the validator cannot catch (it only sees one document at a time).
+const benId       = db.users.findOne({ name: 'Ben Okoye' }, { _id: 1 })._id;     // ids are looked up, never typed
+const claraId     = db.users.findOne({ name: 'Clara Meyer' }, { _id: 1 })._id;
+const badA = db.appointments.insertOne({ doctorId: new ObjectId(), patientId: claraId,   // (a) doctor does not exist
+  start: new Date('2025-05-01T09:00:00Z'), durationMin: 30, reason: 'L7a ghost doctor', status: 'scheduled', fee: 50 });
+const badB = db.appointments.insertOne({ doctorId: benId, patientId: claraId,            // (b) "doctor" is a patient
+  start: new Date('2025-05-02T09:00:00Z'), durationMin: 30, reason: 'L7b patient as doctor', status: 'scheduled', fee: 50 });
+show('L7 inserted', [badA.acknowledged, badB.acknowledged]);
+
+// (a) the lookup finds nobody -> empty array
+show('L7a found', db.appointments.aggregate([
+  { $lookup: { from: 'users', localField: 'doctorId', foreignField: '_id', as: 'doc' } },
+  { $match: { doc: { $size: 0 } } },
+  { $project: { _id: 0, reason: 1 } }
+]).toArray());
+// (b) the lookup finds a user, but that user's role is not doctor
+show('L7b found', db.appointments.aggregate([
+  { $lookup: { from: 'users', localField: 'doctorId', foreignField: '_id', as: 'doc' } },
+  { $unwind: '$doc' },
+  { $match: { 'doc.role': { $ne: 'doctor' } } },
+  { $project: { _id: 0, reason: 1, doctorRole: '$doc.role' } }
+]).toArray());
+show('L7 cleanup', db.appointments.deleteMany({ _id: { $in: [badA.insertedId, badB.insertedId] } }));
+show('L7 appointments left', db.appointments.countDocuments());
+// Result: <paste>
+
+// ---------------------------------------------------------------- Written answers
+// Q1: If L2 and L3 started from appointments, every output row would come from an existing appointment. Dr.
+// Lindqvist and Eva Nilsson have no appointments, so nothing would ever lead to them and they would simply be
+// missing from the result instead of showing 0. Starting from users and counting the looked-up array keeps them.
+//
+// Q2: A validator checks one document on its own; it can see that doctorId is an ObjectId, but it cannot open
+// the users collection to check whose _id it is and what role that user has. L7(b) does that check afterwards:
+// it looks up the user behind doctorId and keeps only the appointments where that user's role is not 'doctor'.
+// To prevent it, the application should look up the user and check role === 'doctor' before inserting
+// (for example in the service that creates appointments), or the design could keep doctors in their own collection.
+//
+// Q3: Advantage: one collection gives one place for login data, emails and common fields, and one person can be
+// found or updated without knowing their role first. Disadvantage: nothing in the database stops a doctorId from
+// pointing to a patient, and every query has to filter by role; with separate doctors and patients collections
+// a doctorId could only ever point into doctors.

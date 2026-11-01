@@ -1,0 +1,70 @@
+// Name: Gor
+// Task: 4 - Part A - Seed data (04_seed.mongodb)
+// Date: 2026-11-01
+// Connection: lab-admin = mongodb://labadmin:<password>@localhost:27019/?authSource=admin
+// Re-runnable: it empties both collections first (deleteMany, NOT drop, so the Task 3 validators stay).
+use('clinic');
+function show(label, value) { console.log(label + ' -> ' + JSON.stringify(value)); }
+
+// ---------------------------------------------------------------- Step 1: empty both collections
+show('empty appointments', db.appointments.deleteMany({}));
+show('empty users', db.users.deleteMany({}));
+// Result: <paste>
+
+// ---------------------------------------------------------------- Step 2a: users (U1-U9)
+const u = db.users.insertMany([
+  /* U1 */ { name: 'Dr. Elena Rossi', email: 'elena.rossi@clinic.test', phone: '555-0201', role: 'doctor', active: true,
+             doctor: { specialty: 'cardiology', licenseNo: 'MD-1001' } },
+  /* U2 */ { name: 'Dr. Hamid Karimi', email: 'hamid.karimi@clinic.test', phone: '555-0202', role: 'doctor', active: true,
+             doctor: { specialty: 'pediatrics', licenseNo: 'MD-1002' } },
+  /* U3 */ { name: 'Dr. Sofia Lindqvist', email: 'sofia.lindqvist@clinic.test', role: 'doctor', active: false,
+             doctor: { specialty: 'dermatology', licenseNo: 'MD-1003' } },
+  /* U4 */ { name: 'Ana Costa', email: 'ana.costa@example.com', phone: '555-0301', role: 'patient', active: true,
+             patient: { birthDate: new Date('1985-04-12T00:00:00Z'), bloodType: 'A+', allergies: ['penicillin'] } },
+  /* U5 */ { name: 'Ben Okoye', email: 'ben.okoye@example.com', phone: '555-0302', role: 'patient', active: true,
+             patient: { birthDate: new Date('1990-11-02T00:00:00Z'), bloodType: 'O-', allergies: [] } },
+  /* U6 */ { name: 'Clara Meyer', email: 'clara.meyer@example.com', role: 'patient', active: true,
+             patient: { birthDate: new Date('2015-06-30T00:00:00Z'), bloodType: 'B+', allergies: ['peanuts', 'latex'] } },
+  /* U7 */ { name: 'Dmitri Volkov', email: 'dmitri.volkov@example.com', phone: '555-0304', role: 'patient', active: true,
+             patient: { birthDate: new Date('1972-02-19T00:00:00Z'), allergies: ['sulfa'] } },
+  /* U8 */ { name: 'Eva Nilsson', email: 'eva.nilsson@example.com', phone: '555-0305', role: 'patient', active: true,
+             patient: { birthDate: new Date('1998-09-05T00:00:00Z'), bloodType: 'AB+' } },
+  /* U9 */ { name: 'Maya Admin', email: 'maya@clinic.test', phone: '555-0100', role: 'admin', active: true }
+]);
+show('users inserted', Object.keys(u.insertedIds).length);
+// Result: <paste>
+
+// Capture the returned _id values (never typed by hand). insertedIds is keyed by position 0..8.
+const U1 = u.insertedIds[0], U2 = u.insertedIds[1],
+      U4 = u.insertedIds[3], U5 = u.insertedIds[4], U6 = u.insertedIds[5], U7 = u.insertedIds[6];
+
+// ---------------------------------------------------------------- Step 2b: appointments (A1-A9)
+const a = db.appointments.insertMany([
+  /* A1 */ { doctorId: U1, patientId: U4, start: new Date('2025-02-03T09:00:00Z'), durationMin: 30,
+             reason: 'Chest pain follow-up', status: 'completed', fee: 120,
+             prescriptions: [{ drug: 'atenolol', dose: '25mg', days: 30 }] },
+  /* A2 */ { doctorId: U1, patientId: U7, start: new Date('2025-02-03T10:00:00Z'), durationMin: 45,
+             reason: 'ECG', status: 'completed', fee: 150 },
+  /* A3 */ { doctorId: U2, patientId: U6, start: new Date('2025-02-05T14:00:00Z'), durationMin: 30,
+             reason: 'Fever', status: 'completed', fee: 80,
+             prescriptions: [{ drug: 'paracetamol', dose: '250mg', days: 3 }] },
+  /* A4 */ { doctorId: U1, patientId: U4, start: new Date('2025-03-10T09:30:00Z'), durationMin: 30,
+             reason: 'Blood pressure check', status: 'completed', fee: 90 },
+  /* A5 */ { doctorId: U2, patientId: U5, start: new Date('2025-03-12T11:00:00Z'), durationMin: 20,
+             reason: 'Vaccination', status: 'completed', fee: 60 },
+  /* A6 */ { doctorId: U1, patientId: U5, start: new Date('2025-03-20T16:00:00Z'), durationMin: 30,
+             reason: 'Palpitations', status: 'scheduled', fee: 100 },
+  /* A7 */ { doctorId: U2, patientId: U6, start: new Date('2025-03-25T14:00:00Z'), durationMin: 30,
+             reason: 'Follow-up', status: 'scheduled', fee: 70 },
+  /* A8 */ { doctorId: U1, patientId: U7, start: new Date('2025-03-28T09:00:00Z'), durationMin: 30,
+             reason: 'Stress test', status: 'cancelled', fee: 0 },
+  /* A9 */ { doctorId: U1, patientId: U4, start: new Date('2025-04-02T10:00:00Z'), durationMin: 30,
+             reason: 'Test results', status: 'scheduled', fee: 90 }
+]);
+show('appointments inserted', Object.keys(a.insertedIds).length);
+// Result: <paste>
+
+// ---------------------------------------------------------------- Step 3: counts (expected 9 and 9)
+show('users count', db.users.countDocuments());
+show('appointments count', db.appointments.countDocuments());
+// Result: <paste>

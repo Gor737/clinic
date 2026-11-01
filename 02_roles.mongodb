@@ -1,0 +1,137 @@
+// Name: Gor
+// Task: 2 - Database users, roles, permission matrix
+// Date: 2026-11-01
+// Server: mongod 9.0.2 on port 27019 with authorization enabled (see 01_auth.mongodb).
+// Run the setup as lab-admin: mongodb://labadmin:<password>@localhost:27019/?authSource=admin
+use('clinic');
+
+// ---------------------------------------------------------------- Step 1 (admin)
+// Re-runnable: createCollection fails if it exists, so check first.
+['users', 'appointments'].forEach(n => {
+  if (!db.getCollectionNames().includes(n)) db.createCollection(n);
+});
+if (db.users.countDocuments({ name: 'Matrix Test' }) === 0) {
+  db.users.insertOne({ name: 'Matrix Test', email: 'matrix@example.com', role: 'admin', active: true });
+}
+// First run: collections created ({ ok: 1 } each);
+// insertOne -> { acknowledged: true, insertedId: ObjectId('6ae71e0ca25df74609ff7c07') }
+
+// ---------------------------------------------------------------- Step 2 (admin)
+try { db.dropRole('frontdesk'); } catch (e) {}   // only for re-runs; role is detached from users automatically
+db.createRole({
+  role: 'frontdesk',
+  privileges: [
+    { resource: { db: 'clinic', collection: 'users' },        actions: ['find', 'insert', 'update'] },
+    { resource: { db: 'clinic', collection: 'appointments' }, actions: ['find', 'insert', 'update'] }
+  ],
+  roles: []
+});
+// { ok: 1 }
+
+// ---------------------------------------------------------------- Step 3 (admin)
+// Connections (authSource=clinic): lab-app, lab-auditor, lab-reception
+//   mongodb://clinicApp:<password>@localhost:27019/clinic?authSource=clinic   (lab-app)
+//   mongodb://auditor:<password>@localhost:27019/clinic?authSource=clinic     (lab-auditor)
+//   mongodb://reception:<password>@localhost:27019/clinic?authSource=clinic   (lab-reception)
+['clinicApp', 'auditor', 'reception'].forEach(u => { try { db.dropUser(u); } catch (e) {} });
+db.createUser({ user: 'clinicApp', pwd: '<password>', roles: [{ role: 'readWrite', db: 'clinic' }] });  // { ok: 1 }
+db.createUser({ user: 'auditor',   pwd: '<password>', roles: [{ role: 'read',      db: 'clinic' }] });  // { ok: 1 }
+db.createUser({ user: 'reception', pwd: '<password>', roles: [{ role: 'frontdesk', db: 'clinic' }] });  // { ok: 1 }
+
+// ---------------------------------------------------------------- Step 4: PREDICTIONS
+// Written BEFORE running the block (saved to lab-data/predictions.txt at 15:10:19, block run afterwards).
+//            A find  B insert  C update  D delete  E createIndex  F list names
+// clinicApp   allow   allow     allow     allow     allow          allow     (readWrite)
+// auditor     allow   DENY      DENY      DENY      DENY           allow     (read)
+// reception   allow   allow     allow     DENY      DENY           allow     (frontdesk)
+// labadmin    allow   allow     allow     allow     allow          allow     (control)
+
+// ---------------------------------------------------------------- Step 5: the six-operation block
+// Run once as each of: lab-app, lab-auditor, lab-reception, lab-admin.
+(function () {
+  const d = db.getSiblingDB('clinic');
+  function t(label, fn) {
+    try { const r = fn(); print(label + ': allowed -> ' + JSON.stringify(r)); }
+    catch (e) { print(label + ': denied -> ' + e.message); }
+  }
+  t('A find', () => d.users.findOne({}, { name: 1, _id: 0 }));
+  t('B insert', () => d.appointments.insertOne({
+    doctorId: new ObjectId(), patientId: new ObjectId(), start: new Date(),
+    durationMin: 15, reason: 'matrix test', status: 'scheduled', fee: 0 }).acknowledged);
+  t('C update', () => { const r = d.users.updateOne({ name: 'Matrix Test' }, { $set: { phone: '+374-00-000000' } });
+                        return { matched: r.matchedCount, modified: r.modifiedCount }; });
+  t('D delete', () => d.appointments.deleteOne({ reason: 'matrix test' }).deletedCount);
+  t('E createIndex', () => d.users.createIndex({ email: 1 }));
+  t('F list names', () => d.getCollectionNames());
+})();
+
+// RESULTS (real output; long "not authorized on clinic to execute command {...}" text shortened to its start)
+// --- lab-app (clinicApp, readWrite)
+// A find: allowed -> {"name":"Matrix Test"}
+// B insert: allowed -> true
+// C update: allowed -> {"matched":1,"modified":1}
+// D delete: allowed -> 1
+// E createIndex: allowed -> "email_1"
+// F list names: allowed -> ["appointments","users"]
+// --- lab-auditor (auditor, read)
+// A find: allowed -> {"name":"Matrix Test"}
+// B insert: denied -> not authorized on clinic to execute command { insert: "appointments", ...
+// C update: denied -> not authorized on clinic to execute command { update: "users", ...
+// D delete: denied -> not authorized on clinic to execute command { delete: "appointments", ...
+// E createIndex: denied -> not authorized on clinic to execute command { createIndexes: "users", ...
+// F list names: allowed -> ["appointments","users"]
+// --- lab-reception (reception, frontdesk)
+// A find: allowed -> {"name":"Matrix Test"}
+// B insert: allowed -> true
+// C update: allowed -> {"matched":1,"modified":0}     (phone was already set to the same value by clinicApp)
+// D delete: denied -> not authorized on clinic to execute command { delete: "appointments", ...
+// E createIndex: denied -> not authorized on clinic to execute command { createIndexes: "users", ...
+// F list names: denied -> not authorized on clinic to execute command { listCollections: 1, filter: {}, cursor: {}, nameOnly: true, authorizedCollections: false, ...
+// --- lab-admin (labadmin, control)
+// A find: allowed -> {"name":"Matrix Test"}
+// B insert: allowed -> true
+// C update: allowed -> {"matched":1,"modified":0}
+// D delete: allowed -> 1
+// E createIndex: allowed -> "email_1"
+// F list names: allowed -> ["appointments","users"]
+//
+// PERMISSION MATRIX (actual)
+//             A find   B insert  C update  D delete  E createIndex  F list names
+// clinicApp   allowed  allowed   allowed   allowed   allowed        allowed
+// auditor     allowed  denied    denied    denied    denied         allowed
+// reception   allowed  allowed   allowed   denied    denied         DENIED  (predicted allowed - wrong)
+// labadmin    allowed  allowed   allowed   allowed   allowed        allowed
+
+// ---------------------------------------------------------------- Step 6 (admin): cleanup
+db.appointments.deleteMany({ reason: 'matrix test' });
+// { acknowledged: true, deletedCount: 1 }
+
+// ---------------------------------------------------------------- Step 7 (admin): revoke / grant
+db.revokeRolesFromUser('clinicApp', [{ role: 'readWrite', db: 'clinic' }]);
+// { ok: 1 }     db.getUser('clinicApp').roles -> []
+// lab-app, repeat B:
+// B insert: denied -> not authorized on clinic to execute command { insert: "appointments", ...
+db.grantRolesToUser('clinicApp', [{ role: 'read', db: 'clinic' }]);
+// { ok: 1 }     db.getUser('clinicApp').roles -> [ { role: 'read', db: 'clinic' } ]
+// lab-app, repeat A and B:
+// A find: allowed -> {"name":"Matrix Test"}
+// B insert: denied -> not authorized on clinic to execute command { insert: "appointments", ...
+// (Afterwards countDocuments({reason:'matrix test'}) -> 0, nothing was left behind.)
+// To restore the original state for a re-run: db.grantRolesToUser('clinicApp', [{ role: 'readWrite', db: 'clinic' }]).
+
+// ---------------------------------------------------------------- Written answers
+// Q1: Missing actions: auditor lacks "insert" (B), "update" (C), "remove" (D) and "createIndex" (E);
+// reception lacks "remove" (D), "createIndex" (E) and "listCollections" (F); the revoked clinicApp lacks
+// "insert" (B), and with only "read" it still lacks it. I predicted one cell wrong: F for reception. I
+// assumed anyone with find on collections can list them, but mongosh's getCollectionNames() sends
+// listCollections with authorizedCollections: false, which needs the listCollections action on the
+// database, and frontdesk only has per-collection find/insert/update (the built-in read role includes it).
+//
+// Q2: Put the sensitive data in a separate collection (for example patientMedical or allergies) and give
+// frontdesk no privileges on it, so only clinical roles can read it. Another option is a MongoDB view of
+// users with a $project that leaves out allergies, with frontdesk getting find only on the view and not
+// on the base collection. MongoDB roles cannot hide single fields in one collection by themselves.
+//
+// Q3: For the account reception, "role" is a database-level set of privileges (frontdesk) that decides
+// which commands the login may run. For the user document of Dr. Elena Rossi, "role" is just an ordinary
+// data field in the application (e.g. 'doctor') that MongoDB does not enforce; only the app logic uses it.

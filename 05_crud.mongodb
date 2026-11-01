@@ -1,0 +1,131 @@
+// Name: Gor
+// Task: 4 - Part B - Read, update, delete with criteria (05_crud.mongodb)
+// Date: 2026-11-01
+// Connection: lab-admin = mongodb://labadmin:<password>@localhost:27019/?authSource=admin
+// Run 04_seed.mongodb first: the checks below are for freshly seeded data, and D1-D3 change the data.
+use('clinic');
+function show(label, value) { console.log(label + ' -> ' + JSON.stringify(value)); }
+const names = docs => docs.map(d => d.name);
+
+// ================================================================ READ
+// R1 Every doctor (check: 3)
+show('R1', names(db.users.find({ role: 'doctor' }, { name: 1, _id: 0 }).toArray()));
+// Result: <paste>
+
+// R2 Doctors who are currently active (check: Rossi, Karimi)
+show('R2', names(db.users.find({ role: 'doctor', active: true }, { name: 1, _id: 0 }).toArray()));
+// Result: <paste>
+
+// R3 Patients with no phone number - filter by role, because Dr. Lindqvist has no phone either (check: Clara Meyer)
+show('R3', names(db.users.find({ role: 'patient', phone: { $exists: false } }, { name: 1, _id: 0 }).toArray()));
+// Result: <paste>
+
+// R4 Patients allergic to penicillin - a value inside an array inside an embedded subdocument (check: Ana Costa)
+show('R4', names(db.users.find({ role: 'patient', 'patient.allergies': 'penicillin' }, { name: 1, _id: 0 }).toArray()));
+// Result: <paste>
+
+// R5 Patients with no allergies recorded - empty array OR field missing (check: Ben Okoye, Eva Nilsson)
+show('R5', names(db.users.find({ role: 'patient', $or: [
+  { 'patient.allergies': { $size: 0 } },
+  { 'patient.allergies': { $exists: false } }
+] }, { name: 1, _id: 0 }).toArray()));
+// Result: <paste>
+
+// R6 Patients born before 1990-01-01 (check: Ana Costa, Dmitri Volkov)
+show('R6', names(db.users.find({ role: 'patient', 'patient.birthDate': { $lt: new Date('1990-01-01T00:00:00Z') } },
+  { name: 1, _id: 0 }).toArray()));
+// Result: <paste>
+
+// R7 Appointments in March 2025, earliest first (check: 5, first is 'Blood pressure check')
+const r7 = db.appointments.find({ start: { $gte: new Date('2025-03-01T00:00:00Z'), $lt: new Date('2025-04-01T00:00:00Z') } },
+  { reason: 1, start: 1, _id: 0 }).sort({ start: 1 }).toArray();
+show('R7 count', r7.length);
+show('R7', r7.map(d => d.reason));
+// Result: <paste>
+
+// R8 Completed appointments with a fee from 80 to 130 inclusive, only reason and fee (check: 3)
+show('R8', db.appointments.find({ status: 'completed', fee: { $gte: 80, $lte: 130 } },
+  { reason: 1, fee: 1, _id: 0 }).toArray());
+// Result: <paste>
+
+// R9 How many appointments have 'follow-up' anywhere in the reason, ignoring case (check: 2)
+show('R9', db.appointments.countDocuments({ reason: { $regex: 'follow-up', $options: 'i' } }));
+// Result: <paste>
+
+// R10 A prescription for atenolol lasting 7+ days - both conditions on the SAME array item (check: 'Chest pain follow-up')
+show('R10', db.appointments.find({ prescriptions: { $elemMatch: { drug: 'atenolol', days: { $gte: 7 } } } },
+  { reason: 1, _id: 0 }).toArray());
+// Result: <paste>
+
+// ================================================================ UPDATE
+// U1 Reactivate Dr. Sofia Lindqvist (check: matched 1, modified 1)
+show('U1', db.users.updateOne({ name: 'Dr. Sofia Lindqvist' }, { $set: { active: true } }));
+// Result: <paste>
+
+// U2 Raise the fee of every scheduled appointment by 10 (check: matched 3)
+show('U2', db.appointments.updateMany({ status: 'scheduled' }, { $inc: { fee: 10 } }));
+// Result: <paste>
+
+// U3 Add allergy 'latex' to Ben Okoye without duplicates ($addToSet), run twice (check: modified 1, then 0)
+show('U3 1st', db.users.updateOne({ name: 'Ben Okoye' }, { $addToSet: { 'patient.allergies': 'latex' } }));
+show('U3 2nd', db.users.updateOne({ name: 'Ben Okoye' }, { $addToSet: { 'patient.allergies': 'latex' } }));
+// Result: <paste>
+
+// U4 Cancel 'Palpitations': status cancelled, fee 0 (check: matched 1, modified 1)
+show('U4', db.appointments.updateOne({ reason: 'Palpitations' }, { $set: { status: 'cancelled', fee: 0 } }));
+// Result: <paste>
+
+// U5 Add a prescription to 'Blood pressure check' - $push creates the array if it is missing (check: 1 prescription)
+show('U5', db.appointments.updateOne({ reason: 'Blood pressure check' },
+  { $push: { prescriptions: { drug: 'amlodipine', dose: '5mg', days: 30 } } }));
+show('U5 prescriptions', db.appointments.findOne({ reason: 'Blood pressure check' }).prescriptions);
+// Result: <paste>
+
+// U6 Upsert Felix Brandt by email - he does not exist, so a new user appears (check: upsertedId present, 10 users)
+show('U6', db.users.updateOne({ email: 'felix.brandt@example.com' },
+  { $set: { name: 'Felix Brandt', role: 'patient', active: true, patient: { birthDate: new Date('1988-07-15T00:00:00Z') } } },
+  { upsert: true }));
+show('U6 users count', db.users.countDocuments());
+// Result: <paste>
+
+// U7 Try to set a patient's role to 'superuser' - the Task 3 validator must refuse (check: rejected)
+try {
+  show('U7', db.users.updateOne({ name: 'Ana Costa' }, { $set: { role: 'superuser' } }));
+} catch (e) {
+  console.log('U7 REJECTED -> ' + e.message.split('\n')[0]);
+}
+// Result: <paste>
+
+// ================================================================ DELETE
+// D1 Delete Felix Brandt (check: deleted 1)
+show('D1', db.users.deleteOne({ email: 'felix.brandt@example.com' }));
+// Result: <paste>
+
+// D2 Delete every cancelled appointment (check: deleted 2 - 'Stress test' and 'Palpitations' from U4)
+show('D2', db.appointments.deleteMany({ status: 'cancelled' }));
+// Result: <paste>
+
+// D3 Delete Ana Costa and everything that depends on her: first her appointments, then the user
+const ana = db.users.findOne({ name: 'Ana Costa', role: 'patient' }, { _id: 1 });
+show('D3 appointments', db.appointments.deleteMany({ patientId: ana._id }));
+show('D3 user', db.users.deleteOne({ _id: ana._id }));
+// Result: <paste>
+
+// Final check (expected: 8 users, 4 appointments)
+show('final users', db.users.countDocuments());
+show('final appointments', db.appointments.countDocuments());
+// Result: <paste>
+
+// ================================================================ Written answers
+// Q1: The appointments point to Ana through patientId, but Ana does not point to them. If I delete the user
+// first, her three appointments stay in the collection with a patientId that points to nothing ("orphans"),
+// and I can no longer find them by looking her up by name. Deleting the appointments first, while I still
+// know her _id, removes everything cleanly.
+//
+// Q2: I used $elemMatch, which requires both conditions to be true for the SAME prescription. With plain dot
+// notation, { 'prescriptions.drug': 'atenolol', 'prescriptions.days': { $gte: 7 } }, each condition can be
+// satisfied by a different item. Example document where they disagree:
+//   { reason: 'Mixed', prescriptions: [ { drug: 'atenolol', dose: '25mg', days: 3 },
+//                                       { drug: 'paracetamol', dose: '500mg', days: 10 } ] }
+// Dot notation matches it (atenolol is in item 0, days >= 7 is in item 1), but $elemMatch does not, because
+// no single prescription is atenolol AND lasts 7 days or more.
